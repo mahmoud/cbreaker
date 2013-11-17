@@ -14,8 +14,11 @@ _LITERAL = r"('([^'\\]*(?:\\.[^'\\]*)*)'|\d+)"
 _TUPLE_RE = re.compile(r"\(%s(,%s)*\)" % (_LITERAL, _LITERAL))
 
 
-def main(filename):
-    msd = MySQLDump(filename, TABLE_NAME, _FIELD_NAMES)
+# TODO: table name and field autoguess/load
+
+
+def main(filename, tablename):
+    msd = MySQLDump(filename, tablename, [])
     reader = msd.get_reader()
     entries = reader.load(100)
     import pdb;pdb.set_trace()
@@ -147,5 +150,6 @@ def bytes2human(nbytes, ndigits=0):
 if __name__ == '__main__':
     prs = ArgumentParser()
     prs.add_argument('filename')
+    prs.add_argument('tablename')
     args = prs.parse_args()
-    main(args.filename)
+    main(args.filename, args.tablename)
