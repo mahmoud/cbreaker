@@ -9,27 +9,46 @@ import codecs
 
 from argparse import ArgumentParser
 
+_FLOAT_PATTERN = r'[+-]?\ *(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?'
+_INT_PATTERN = r'[+-]?\ *[0-9]+'
+
 READ_SIZE = 2 ** 18  # 256kb
-_LITERAL = r"('([^'\\]*(?:\\.[^'\\]*)*)'|\d+)"
-_TUPLE_RE = re.compile(r"\(%s(,%s)*\)" % (_LITERAL, _LITERAL))
+_LITERAL = r"('([^'\\]*(?:\\.[^'\\]*)*)'|%s|%s)" % (_INT_PATTERN,
+                                                    _FLOAT_PATTERN)
+_TUPLE_RE = re.compile(r"\(%s(,\s*%s)+\)" % (_LITERAL, _LITERAL))
+_INSERT_INTO_TOKEN = 'INSERT INTO `'
 
 
-# TODO: table name and field autoguess/load
+TABLE_NAME_RE = re.compile(r"CREATE TABLE `(?P<tablename>\w+)` \(")
+COL_NAME_RE = re.compile(r"\s+`(?P<colname>\w+)`")
 
 
-def main(filename, tablename):
-    msd = MySQLDump(filename, tablename, [])
+def guess_table_name_fields(header_text):
+    col_names = []
+
+    tnm = TABLE_NAME_RE.search(header_text)
+    if not tnm:
+        raise ValueError("couldn't guess table name and fields")
+    table_name = tnm.group('tablename')
+    rem_lines = header_text[tnm.end():].splitlines()
+    for line in rem_lines:
+        cnm = COL_NAME_RE.match(line)
+        if cnm:
+            col_names.append(cnm.group('colname'))
+    return table_name, col_names
+
+
+def main(filename):
+    msd = MySQLDump(filename, None, [])
     reader = msd.get_reader()
     entries = reader.load(100)
     import pdb;pdb.set_trace()
 
 
 class MySQLDump(object):
-    def __init__(self, source_file, table_name, table_fields,
+    def __init__(self, source_file, table_name=None, field_names=None,
                  read_size=READ_SIZE, is_gzip=None, encoding='utf-8'):
         self.source_file = source_file
-        self.table_name = table_name
-        self.table_fields = list(table_fields)
         if is_gzip is None:
             is_gzip = source_file.endswith('.gz')
         self.is_gzip = is_gzip
@@ -38,12 +57,18 @@ class MySQLDump(object):
 
         self.total_size = bytes2human(os.path.getsize(source_file), 2)
 
+        if table_name is None:
+            header_text = self.get_header()
+            table_name, field_names = guess_table_name_fields(header_text)
+        self.table_name = table_name
+        self.field_names = list(field_names)
+
     def get_reader(self, *a, **kw):
         return TableReader(self, *a, **kw)
 
     def get_create_statement(self):
         return ('CREATE TABLE %s (%s);'
-                % (self.table_name, ', '.join(self.table_fields)))
+                % (self.table_name, ', '.join(self.field_names)))
 
     def get_header(self):
         tmp_reader = self.get_reader(verbose=False)
@@ -71,17 +96,16 @@ class TableReader(object):
             self._get_cur_pos = lambda: self._file_handle_enc.tell()
         self._file_handle = self.decoder(self._file_handle_enc,
                                          errors='replace')
-
-        self._insert_into_token = 'INSERT INTO `%s`' % msd.table_name
         self._header = ''
 
     def _load_header(self):
         data = self._file_handle.read(4096)
-        self._header, self._buff = data.split(self._insert_into_token)
+        self._header, data = data.split(_INSERT_INTO_TOKEN, 1)
         if not self._header:
             raise ValueError('complete CREATE TABLE preamble not found'
-                             ' (or exceeds 4kb); check that the table name '
-                             ' %r is correct' % self._msd.table_name)
+                             ' (or exceeds 4kb)')
+        _, _, self._buff = data.partition('` VALUES')
+
         return self._header
 
     def load(self, min_count=None):
@@ -93,7 +117,7 @@ class TableReader(object):
             data = self._file_handle.read(self._msd.read_size)
             self._buff += data
 
-            ii_end = self._buff.find(self._insert_into_token, 11)
+            ii_end = self._buff.find(_INSERT_INTO_TOKEN, 11)
             if ii_end < 0:
                 continue
             self.cur_stmt_count += 1
@@ -150,6 +174,5 @@ def bytes2human(nbytes, ndigits=0):
 if __name__ == '__main__':
     prs = ArgumentParser()
     prs.add_argument('filename')
-    prs.add_argument('tablename')
     args = prs.parse_args()
-    main(args.filename, args.tablename)
+    main(args.filename)
