@@ -1,193 +1,50 @@
 # -*- coding: utf-8 -*-
 
-import os
-import re
-import ast
-import time
-import gzip
 import sqlite3
 from argparse import ArgumentParser
-import codecs
 
-TABLE_NAME = 'categorylinks'
+from dump_loader import MySQLDump
 
-_INSERT_INTO_TOKEN = 'INSERT INTO `%s`' % TABLE_NAME
+CL_TABLE_NAME = 'categorylinks'
+CL_FIELD_NAMES = ('cl_from cl_to cl_sortkey cl_timestamp cl_sortkey_prefix'
+                  ' cl_collation cl_type').split()
 
-_FIELD_NAMES = ('cl_from, cl_to, cl_sortkey, cl_timestamp, cl_sortkey_prefix,'
-                ' cl_collation, cl_type').split(', ')
-_TABLE_SCHEMA = ('CREATE TABLE %s (%s);'
-                 % (TABLE_NAME, ', '.join(_FIELD_NAMES)))
-READ_SIZE = 2 ** 18  # 256kb
-_LITERAL = r"('([^'\\]*(?:\\.[^'\\]*)*)'|\d+)"
-_TUPLE_RE = re.compile(r"\(%s(,%s)*\)" % (_LITERAL, _LITERAL))
-_LINK_TYPE_IDX = -1
 _LINK_TARGET_VAL = 'subcat'
 
 
-def create_table(location=':memory:'):
+def create_table(schema, location=':memory:'):
     conn = sqlite3.connect(location)
-    conn.execute(_TABLE_SCHEMA)
+    conn.execute(schema)
     conn.commit()
     return conn
 
 
-class DatabaseLoader(object):
-    def __init__(self, source_file, target_db_file):
-        self.source_file = source_file
-        self.start_time = time.time()
-        self.total_size = bytes2human(os.path.getsize(source_file), 2)
-        self.cur_stmt_count = 0
-        self.skipped_stmt_count = 0
-        self.decoder = codecs.getreader('utf-8')
+def main(filename):
+    dump = MySQLDump(filename, CL_TABLE_NAME, CL_FIELD_NAMES)
+    schema = dump.get_create_statement()
+    conn = create_table(schema, 'cat_table.db')
+    ins_query = (u'INSERT INTO %s VALUES (%s)'
+                 % (CL_TABLE_NAME, ', '.join('?' * len(CL_FIELD_NAMES))))
 
-        self.buff = u''
-
-        self.temp_table = create_table(':memory:')
-        self.perm_table = create_table(target_db_file)
-
-        with gzip.open(self.source_file) as gf_encoded:
-            self._load(gf_encoded)
-
-    def _load(self, file_handle, verbose=True):
-        file_handle_encoded = file_handle
-        file_handle = self.decoder(file_handle, errors='replace')
-
-        stmt_count = 0
-        total_record_count = 0
-        internet_of_things = []
-
-        data = file_handle.read(4096)
-        self.buff = data[data.index(_INSERT_INTO_TOKEN):]
-
-        while data:
-            data = file_handle.read(READ_SIZE)
-            self.buff += data
-
-            ii_end = self.buff.find(_INSERT_INTO_TOKEN, 11)
-            if ii_end < 0:
-                continue
-            stmt_count += 1
-            full_statement, self.buff = self.buff[:ii_end].strip(), self.buff[ii_end:]
-            for m in _TUPLE_RE.finditer(full_statement):
-                group = m.group()
-                if _LINK_TARGET_VAL not in group:
-                    continue
-                val_tuple = ast.literal_eval(group)
-                if val_tuple[_LINK_TYPE_IDX] != _LINK_TARGET_VAL:
-                    continue
-                internet_of_things.append([v.decode('utf-8') if type(v) is str else v
-                                           for v in val_tuple])
-
-            cur_count = len(internet_of_things)
-            cur_bytes_read = bytes2human(file_handle_encoded.fileobj.tell(), 2)
-            cur_duration = round(time.time() - self.start_time, 2)
-
-            if verbose and stmt_count % 5 == 0:
-                print cur_count, 'records.', cur_bytes_read, 'out of', self.total_size, 'read. (',
-                print stmt_count, 'statements,', self.skipped_stmt_count, 'skipped)',
-                print cur_duration, 'seconds.'
-
-            if len(internet_of_things) > 1000:
-                _query = (u'INSERT INTO %s VALUES (%s)'
-                          % (TABLE_NAME, ', '.join('?' * len(_FIELD_NAMES))))
-                pt_cur = self.perm_table.cursor()
-                for a in internet_of_things:
-                    pt_cur.execute(_query, a)
-                self.perm_table.commit()
-                internet_of_things = []
-        return
-
-
-def db_main(filename):
-    db_loader = DatabaseLoader(filename, 'cat_table.db')
-
-
-def chunked_iter(src, size, **kw):
-    """
-    Generates 'size'-sized chunks from 'src' iterable. Unless
-    the optional 'fill' keyword argument is provided, iterables
-    not even divisible by 'size' will have a final chunk that is
-    smaller than 'size'.
-
-    Note that fill=None will in fact use None as the fill value.
-
-    >>> list(chunked_iter(range(10), 3))
-    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9]]
-    >>> list(chunked_iter(range(10), 3, fill=None))
-    [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, None, None]]
-    """
-    if not is_iterable(src):
-        raise TypeError('expected an iterable')
-    size = int(size)
-    if size <= 0:
-        raise ValueError('expected a positive integer chunk size')
-    do_fill = True
-    try:
-        fill_val = kw.pop('fill')
-    except KeyError:
-        do_fill = False
-        fill_val = None
-    if kw:
-        raise ValueError('got unexpected keyword arguments: %r' % kw.keys())
-    if not src:
-        return
-    postprocess = lambda chk: chk
-    if isinstance(src, basestring):
-        postprocess = lambda chk, _sep=type(src)(): _sep.join(chk)
-    cur_chunk = []
-    i = 0
-    for item in src:
-        cur_chunk.append(item)
-        i += 1
-        if i % size == 0:
-            yield postprocess(cur_chunk)
-            cur_chunk = []
-    if cur_chunk:
-        if do_fill:
-            lc = len(cur_chunk)
-            cur_chunk[lc:] = [fill_val] * (size - lc)
-        yield postprocess(cur_chunk)
+    should_parse = lambda val_str: _LINK_TARGET_VAL in val_str
+    should_keep = lambda val_tuple: val_tuple[-1] == _LINK_TARGET_VAL
+    reader = dump.get_reader(should_parse=should_parse,
+                             should_keep=should_keep)
+    entries = reader.load(1000)
+    while entries:
+        cursor = conn.cursor()
+        for a in entries:
+            cursor.execute(ins_query, a)
+        conn.commit()
+        entries = reader.load(1000)
+    count_query = 'SELECT COUNT(*) FROM %s' % CL_TABLE_NAME
+    written_count = conn.execute(count_query).fetchone()[0]
+    print 'loaded and wrote %s entries.' % written_count
     return
-
-
-def is_iterable(obj):
-    try:
-        iter(obj)
-    except TypeError:
-        return False
-    return True
-
-
-def is_scalar(obj):
-    return not is_iterable(obj) or isinstance(obj, basestring)
-
-
-_SIZE_SYMBOLS = ('B', 'K', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
-_SIZE_BOUNDS = [(1024 ** i, sym) for i, sym in enumerate(_SIZE_SYMBOLS)]
-_SIZE_RANGES = zip(_SIZE_BOUNDS, _SIZE_BOUNDS[1:])
-
-
-def bytes2human(nbytes, ndigits=0):
-    """
-    >>> bytes2human(128991)
-    '126K'
-    >>> bytes2human(100001221)
-    '95M'
-    >>> bytes2human(0, 2)
-    '0.00B'
-    """
-    abs_bytes = abs(nbytes)
-    for (size, symbol), (next_size, next_symbol) in _SIZE_RANGES:
-        if abs_bytes <= next_size:
-            break
-    hnbytes = float(nbytes) / size
-    return '{hnbytes:.{ndigits}f}{symbol}'.format(hnbytes=hnbytes,
-                                                  ndigits=ndigits,
-                                                  symbol=symbol)
 
 
 if __name__ == '__main__':
     prs = ArgumentParser()
     prs.add_argument('filename')
     args = prs.parse_args()
-    db_main(args.filename)
+    main(args.filename)
