@@ -17,7 +17,8 @@ def create_table(schema, location=':memory:'):
 
 
 def main(filename):
-    dump = MySQLDump(filename, CAT_TABLE_NAME, CAT_FIELD_NAMES)
+    dump = MySQLDump(filename)
+    assert dump.field_names == CAT_FIELD_NAMES, 'field names are out of date'
     schema = dump.get_create_statement()
     conn = create_table(schema, 'cat_table.db')
     ins_query = (u'INSERT INTO %s VALUES (%s)'
