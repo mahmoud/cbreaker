@@ -44,7 +44,8 @@ def main(page_filename, catlink_filename):
     missing_cat_links = []
     for cl in cl_entries:
         try:
-            cat_links.append([id_name_map[cl[0]], cl[1]])
+            # relation is "contains", i.e., "Sports" contains "Wrestling"
+            cat_links.append([cl[1], id_name_map[cl[0]]])
         except KeyError:
             missing_cat_links.append(cl)
     with open('cat_links.json', 'w') as f:
