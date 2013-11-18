@@ -42,6 +42,11 @@ def main(filename):
     msd = MySQLDump(filename, None, [])
     reader = msd.get_reader()
     entries = reader.load(100)
+    #while entries:
+    #    entries = reader.load(1000)
+    #    cats = [e for e in entries if e[1] == 14]
+    #    if cats:
+    #        import pdb;pdb.set_trace()
     import pdb;pdb.set_trace()
 
 
